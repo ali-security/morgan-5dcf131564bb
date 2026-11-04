@@ -689,7 +689,7 @@ describe('morgan()', function () {
           assert.strictEqual(lines.length, 1)
           assert.strictEqual(lines[0].indexOf('\r'), -1)
           assert.strictEqual(lines[0].indexOf('\n'), -1)
-          assert.strictEqual(lines[0], '- [01/Jan/1970 00-00-00 +0000] "GET /injected HTTP/1.1" 200 - "-" "curl/8.14.1"\\r\\n192.0.2.0 - - ')
+          assert.strictEqual(lines[0], '- [01/Jan/1970 00-00-00 +0000] \\"GET /injected HTTP/1.1\\" 200 - \\"-\\" \\"curl/8.14.1\\"\\r\\n192.0.2.0 - - ')
           done()
         })
 
@@ -754,6 +754,64 @@ describe('morgan()', function () {
         request(createServer(':remote-user', { stream: stream }))
           .get('/')
           .set('Authorization', 'Basic Og==')
+          .expect(200, cb)
+      })
+    })
+
+    // @see https://github.com/expressjs/morgan/security/advisories/GHSA-9f6g-j8ch-79g4
+    describe('double-quote log field injection', function () {
+      it('should escape double quotes in a token value', function (done) {
+        var cb = after(2, function (err, res, line) {
+          if (err) return done(err)
+          assert.strictEqual(line, 'evil\\"user')
+          done()
+        })
+
+        var stream = createLineStream(function (line) {
+          cb(null, null, line)
+        })
+
+        // 'evil"user:x' in Base64
+        request(createServer(':remote-user', { stream: stream }))
+          .get('/')
+          .set('Authorization', 'Basic ZXZpbCJ1c2VyOng=')
+          .expect(200, cb)
+      })
+
+      it('should escape double quotes so a quoted field cannot be broken out of', function (done) {
+        var cb = after(2, function (err, res, line) {
+          if (err) return done(err)
+          // the injected quotes are escaped, so the value stays a single quoted field
+          assert.strictEqual(line, '"eviL\\" 200 \\"x"')
+          done()
+        })
+
+        var stream = createLineStream(function (line) {
+          cb(null, null, line)
+        })
+
+        request(createServer('":user-agent"', { stream: stream }))
+          .get('/')
+          .set('User-Agent', 'eviL" 200 "x')
+          .expect(200, cb)
+      })
+
+      it('should not forge quoted fields in combined format', function (done) {
+        var cb = after(2, function (err, res, line) {
+          if (err) return done(err)
+          var masked = line.replace(/\d{2}\/\w{3}\/\d{4}:\d{2}:\d{2}:\d{2} \+0000/, '_timestamp_')
+          assert.strictEqual(masked, res.text + ' - - [_timestamp_] "GET / HTTP/1.1" 200 - "http://localhost/\\" \\"forged-ua" "my-ua"')
+          done()
+        })
+
+        var stream = createLineStream(function (line) {
+          cb(null, null, line)
+        })
+
+        request(createServer('combined', { stream: stream }))
+          .get('/')
+          .set('Referer', 'http://localhost/" "forged-ua')
+          .set('User-Agent', 'my-ua')
           .expect(200, cb)
       })
     })
